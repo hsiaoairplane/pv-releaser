@@ -10,8 +10,5 @@ COPY . .
 # Build the Go binary
 RUN go build -o pv-releaser main.go
 
-# Expose port for webhook server
-EXPOSE 8443
-
 # Run the webhook
 CMD ["/app/pv-releaser"]
