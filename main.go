@@ -47,6 +47,12 @@ func (r *PVCReclaimerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if pv.Spec.ClaimRef == nil {
 			continue
 		}
+		if pv.Spec.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimRetain {
+			continue
+		}
+		if pv.Status.Phase != corev1.VolumeReleased {
+			continue
+		}
 
 		// If PV is bound to another PVC
 		if pv.Spec.ClaimRef.Name != pvc.Name ||
