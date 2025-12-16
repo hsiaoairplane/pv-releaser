@@ -1,0 +1,67 @@
+# PV Releaser
+
+A Kubernetes custom controller that automatically releases retained PersistentVolumes when a new PersistentVolumeClaim fails to bind due to an existing claimRef.
+
+## 📌 Problem
+
+In Kubernetes clusters using static / manually managed PersistentVolumes, it is common to hit the following situation:
+- A PVC is deleted and later recreated
+- The underlying PV uses:
+  ```yaml
+  persistentVolumeReclaimPolicy: Retain
+  ```
+
+- The PV transitions to Released
+- A new PVC tries to bind but fails with:
+  ```bash
+  volume already bound to a different claim
+  ```
+
+
+This leaves the PVC stuck in Pending, requiring manual PV editing.
+
+## 🎯 What pv-release Does
+
+`pv-releaser` automatically resolves this situation by:
+1. Watching PVC Create and Update events only
+1. Detecting PVCs stuck in Pending due to a bind conflict
+1. Finding PVs that:
+   - Have persistentVolumeReclaimPolicy: Retain
+   - Are in Released phase
+   - Are still bound to a different PVC
+1. Clearing the stale fields:
+   ```yaml
+   spec:
+     claimRef:
+       name: foo-pvc
+       namespace: foo
+       uid: ""
+       resourceVersion: ""
+   ```
+1. Letting Kubernetes re-bind the PV to the new PVC
+
+## 🚦 Event Handling
+| Event Type | Handled |
+| --- | --- |
+| PVC Create | ✅ |
+| PVC Update | ✅ |
+| PVC Delete | ❌ Ignored |
+| Generic / Resync | ❌ Ignored |
+
+Delete events are explicitly filtered using controller-runtime predicates.
+
+## 🧠 Reconciliation Logic
+PVC Create / Update
+        ↓
+PVC phase == Pending
+        ↓
+PVC has bind conflict ("already bound")
+        ↓
+Find PV with:
+  - claimRef != nil
+  - ReclaimPolicy == Retain
+  - Status == Released
+        ↓
+Clear claimRef.uid + resourceVersion
+        ↓
+Kubernetes retries binding
