@@ -51,12 +51,15 @@ func (r *PVCReclaimerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	for _, pv := range pvList.Items {
-		if pv.Spec.ClaimRef == nil {
+		// Check Persistent Volume (PV) Spec
+		if pv.Spec.ClaimRef == nil ||
+			pv.Spec.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimRetain ||
+			pv.Spec.NFS == nil ||
+			pv.Spec.NFS.Server == "" ||
+			pv.Spec.NFS.Path == "" {
 			continue
 		}
-		if pv.Spec.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimRetain {
-			continue
-		}
+		// Check Persistent Volume (PV) Status
 		if pv.Status.Phase != corev1.VolumeReleased {
 			continue
 		}
