@@ -147,7 +147,7 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,
 		LeaderElection:          true,
-		LeaderElectionID:        "pv-releaser",
+		LeaderElectionID:        "static-pv-releaser",
 		LeaderElectionNamespace: namespace,
 	})
 	if err != nil {
