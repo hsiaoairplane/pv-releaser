@@ -15,7 +15,7 @@ test:
 
 .PHONY: build
 build:
-	go build -o pv-releaser -race -v .
+	go build -o static-pv-releaser -race -v .
 
 .PHONY: clean
 clean:

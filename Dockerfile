@@ -8,7 +8,7 @@ WORKDIR /app
 COPY . .
 
 # Build the Go binary
-RUN go build -o pv-releaser main.go
+RUN go build -o static-pv-releaser main.go
 
 # Run the webhook
-CMD ["/app/pv-releaser"]
+CMD ["/app/static-pv-releaser"]

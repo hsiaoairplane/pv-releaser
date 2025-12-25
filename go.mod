@@ -1,4 +1,4 @@
-module github.com/hsiaoairplane/pv-releaser
+module github.com/hsiaoairplane/static-pv-releaser
 
 go 1.25.1
 
