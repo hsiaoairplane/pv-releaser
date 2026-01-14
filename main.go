@@ -8,9 +8,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	storagehelpers "k8s.io/component-helpers/storage/volume"
+	"k8s.io/kubernetes/pkg/controller/volume/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -41,7 +44,12 @@ func (r *PVCReclaimerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Look for binding failure events via annotations
-	if !hasBindingConflict(&pvc) {
+	hasConflict, err := r.hasBindingConflictEvent(ctx, &pvc)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if !hasConflict {
 		return ctrl.Result{}, nil
 	}
 
@@ -88,26 +96,48 @@ func (r *PVCReclaimerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-func hasBindingConflict(pvc *corev1.PersistentVolumeClaim) bool {
-	for _, cond := range pvc.Status.Conditions {
-		if cond.Type == corev1.PersistentVolumeClaimResizing {
+func (r *PVCReclaimerReconciler) hasBindingConflictEvent(
+	ctx context.Context,
+	pvc *corev1.PersistentVolumeClaim,
+) (bool, error) {
+
+	var eventList corev1.EventList
+	if err := r.List(ctx, &eventList, client.InNamespace(pvc.Namespace)); err != nil {
+		return false, err
+	}
+
+	for _, ev := range eventList.Items {
+		if ev.InvolvedObject.Kind != "PersistentVolumeClaim" {
 			continue
 		}
-		if strings.Contains(cond.Message, "already bound") {
-			return true
+		if ev.InvolvedObject.Name != pvc.Name {
+			continue
+		}
+		if ev.Reason != events.FailedBinding {
+			continue
+		}
+		if strings.Contains(ev.Message, "already bound") {
+			return true, nil
 		}
 	}
-	return false
+
+	return false, nil
 }
 
 func (r *PVCReclaimerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	pvcPredicate := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			return true
+			pvc := e.Object.(*corev1.PersistentVolumeClaim)
+			return !metav1.HasAnnotation(pvc.ObjectMeta, storagehelpers.AnnBoundByController)
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldPVC := e.ObjectOld.(*corev1.PersistentVolumeClaim)
 			newPVC := e.ObjectNew.(*corev1.PersistentVolumeClaim)
+
+			// Skip controller-bound PVCs
+			if metav1.HasAnnotation(newPVC.ObjectMeta, storagehelpers.AnnBoundByController) {
+				return false
+			}
 
 			// Transition into Pending
 			return oldPVC.Status.Phase != corev1.ClaimPending &&

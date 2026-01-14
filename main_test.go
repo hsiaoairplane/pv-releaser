@@ -19,7 +19,7 @@ func TestReconcile_ReleasesConflictingPV(t *testing.T) {
 
 	ctx := context.Background()
 
-	// --- PVC with binding conflict ---
+	// --- PVC without bound-by-controller annotation ---
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pvc",
@@ -27,13 +27,24 @@ func TestReconcile_ReleasesConflictingPV(t *testing.T) {
 		},
 		Status: corev1.PersistentVolumeClaimStatus{
 			Phase: corev1.ClaimPending,
-			Conditions: []corev1.PersistentVolumeClaimCondition{
-				{
-					Type:    corev1.PersistentVolumeClaimConditionType("Bound"),
-					Message: "volume already bound to a different claim",
-				},
-			},
 		},
+	}
+
+	// --- FailedBinding Event (already bound) ---
+	event := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pvc-failedbinding",
+			Namespace: "default",
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind:      "PersistentVolumeClaim",
+			Namespace: pvc.Namespace,
+			Name:      pvc.Name,
+			UID:       pvc.UID,
+		},
+		Reason:  "FailedBinding",
+		Message: "volume already bound to a different claim",
+		Type:    corev1.EventTypeWarning,
 	}
 
 	// --- Released PV bound to another PVC ---
@@ -63,7 +74,7 @@ func TestReconcile_ReleasesConflictingPV(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(pvc, pv).
+		WithObjects(pvc, pv, event).
 		Build()
 
 	reconciler := &PVCReclaimerReconciler{
