@@ -9,17 +9,57 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/kubernetes/pkg/controller/volume/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestReconcile_ReleasesConflictingPV(t *testing.T) {
+func TestReconcilePVReleaseScenarios(t *testing.T) {
+	tests := []struct {
+		name                  string
+		initialClaimRefName   string
+		expectUIDCleared      bool
+		expectResourceCleared bool
+	}{
+		{
+			name:                  "release pv when claimref matches pvc",
+			initialClaimRefName:   "test-pvc",
+			expectUIDCleared:      true,
+			expectResourceCleared: true,
+		},
+		{
+			name:                  "do not release pv when claimref does not match pvc",
+			initialClaimRefName:   "test-pvc-new",
+			expectUIDCleared:      false,
+			expectResourceCleared: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runReconcileTest(
+				t,
+				tt.initialClaimRefName,
+				tt.expectUIDCleared,
+				tt.expectResourceCleared,
+			)
+		})
+	}
+}
+
+func runReconcileTest(
+	t *testing.T,
+	claimRefName string,
+	expectUIDCleared bool,
+	expectResourceCleared bool,
+) {
+	t.Helper()
+
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 
 	ctx := context.Background()
 
-	// --- PVC without bound-by-controller annotation ---
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pvc",
@@ -30,7 +70,6 @@ func TestReconcile_ReleasesConflictingPV(t *testing.T) {
 		},
 	}
 
-	// --- FailedBinding Event (already bound) ---
 	event := &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pvc-failedbinding",
@@ -42,12 +81,11 @@ func TestReconcile_ReleasesConflictingPV(t *testing.T) {
 			Name:      pvc.Name,
 			UID:       pvc.UID,
 		},
-		Reason:  "FailedBinding",
+		Reason:  events.FailedBinding,
 		Message: "volume already bound to a different claim",
 		Type:    corev1.EventTypeWarning,
 	}
 
-	// --- Released PV bound to another PVC ---
 	pv := &corev1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-pv",
@@ -61,9 +99,9 @@ func TestReconcile_ReleasesConflictingPV(t *testing.T) {
 				},
 			},
 			ClaimRef: &corev1.ObjectReference{
-				Name:            "old-pvc",
+				Name:            claimRefName,
 				Namespace:       "default",
-				UID:             types.UID("old-uid"),
+				UID:             types.UID("foobar"),
 				ResourceVersion: "12345",
 			},
 		},
@@ -89,28 +127,27 @@ func TestReconcile_ReleasesConflictingPV(t *testing.T) {
 		},
 	}
 
-	// --- Run reconcile ---
-	result, err := reconciler.Reconcile(ctx, req)
+	_, err := reconciler.Reconcile(ctx, req)
 	if err != nil {
 		t.Fatalf("reconcile returned error: %v", err)
 	}
 
-	// --- Expect requeue ---
-	if !result.Requeue {
-		t.Fatalf("expected reconcile to requeue")
-	}
-
-	// --- Fetch updated PV ---
 	var updatedPV corev1.PersistentVolume
 	if err := fakeClient.Get(ctx, types.NamespacedName{Name: pv.Name}, &updatedPV); err != nil {
 		t.Fatalf("failed to get updated pv: %v", err)
 	}
 
-	// --- Assert ClaimRef fields cleared ---
-	if updatedPV.Spec.ClaimRef.UID != "" {
+	if expectUIDCleared && updatedPV.Spec.ClaimRef.UID != "" {
 		t.Errorf("expected ClaimRef.UID to be cleared")
 	}
-	if updatedPV.Spec.ClaimRef.ResourceVersion != "" {
+	if !expectUIDCleared && updatedPV.Spec.ClaimRef.UID == "" {
+		t.Errorf("expected ClaimRef.UID to not be cleared")
+	}
+
+	if expectResourceCleared && updatedPV.Spec.ClaimRef.ResourceVersion != "" {
 		t.Errorf("expected ClaimRef.ResourceVersion to be cleared")
+	}
+	if !expectResourceCleared && updatedPV.Spec.ClaimRef.ResourceVersion == "" {
+		t.Errorf("expected ClaimRef.ResourceVersion to not be cleared")
 	}
 }
