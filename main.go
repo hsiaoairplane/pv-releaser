@@ -19,7 +19,28 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+var (
+	staticPVReleaserSuccessTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "static_pv_releaser_success_total",
+			Help: "Total number of PersistentVolumes successfully released by the static PV releaser",
+		},
+		[]string{"pv"},
+	)
+
+	staticPVReleaserFailureTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "static_pv_releaser_failure_total",
+			Help: "Total number of PersistentVolumes failed to be released by the static PV releaser",
+		},
+		[]string{"pv"},
+	)
 )
 
 type PVCReclaimerReconciler struct {
@@ -60,11 +81,15 @@ func (r *PVCReclaimerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	for _, pv := range pvList.Items {
 		// Check Persistent Volume (PV) Spec
-		if pv.Spec.ClaimRef == nil ||
-			pv.Spec.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimRetain ||
-			pv.Spec.NFS == nil ||
-			pv.Spec.NFS.Server == "" ||
-			pv.Spec.NFS.Path == "" {
+		if pv.Spec.ClaimRef == nil || // No ClaimRef
+			pv.Spec.ClaimRef.Namespace != pvc.Namespace || // Different PVC Namespace
+			pv.Spec.ClaimRef.Name != pvc.Name || // Different PVC Name
+			pv.Spec.ClaimRef.UID == pvc.UID || // Same PVC UID
+			pv.Spec.ClaimRef.ResourceVersion == "" || // No ResourceVersion to compare
+			pv.Spec.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimRetain || // Not Retain policy
+			pv.Spec.NFS == nil || // Not NFS volume
+			pv.Spec.NFS.Server == "" || // Missing NFS server
+			pv.Spec.NFS.Path == "" { // Missing NFS path
 			continue
 		}
 		// Check Persistent Volume (PV) Status
@@ -72,25 +97,30 @@ func (r *PVCReclaimerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			continue
 		}
 
-		// If PV is bound to another PVC
-		if pv.Spec.ClaimRef.Name != pvc.Name ||
-			pv.Spec.ClaimRef.Namespace != pvc.Namespace {
+		// If PV is bound to previous PVC (pv.Spec.ClaimRef.UID != pvc.UID), clear ClaimRef.UID and ClaimRef.ResourceVersion
+		logger.Info("To Release PV %s claimRef with PVC %s/%s UID %v", pv.Name, pv.Spec.ClaimRef.Name, pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.UID)
 
-			logger.Info("Releasing PV claimRef",
-				"pv", pv.Name,
-				"oldPVC", pv.Spec.ClaimRef.Namespace+"/"+pv.Spec.ClaimRef.Name)
+		patch := client.MergeFrom(pv.DeepCopy())
+		pv.Spec.ClaimRef.UID = ""
+		pv.Spec.ClaimRef.ResourceVersion = ""
 
-			patch := client.MergeFrom(pv.DeepCopy())
-			pv.Spec.ClaimRef.UID = ""
-			pv.Spec.ClaimRef.ResourceVersion = ""
+		if err := r.Patch(ctx, &pv, patch); err != nil {
+			// Record failure metric
+			staticPVReleaserFailureTotal.WithLabelValues(pv.Name).Inc()
 
-			if err := r.Patch(ctx, &pv, patch); err != nil {
-				return ctrl.Result{}, err
-			}
+			// Log failure
+			logger.Info("Failed to release PV %s claimRef with PVC %s/%s UID %v", pv.Name, pv.Spec.ClaimRef.Name, pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.UID)
 
-			// Requeue quickly to let binding retry
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{}, err
 		}
+
+		// Record success metric
+		staticPVReleaserSuccessTotal.WithLabelValues(pv.Name).Inc()
+
+		// Log success
+		logger.Info("Successfully released PV %s claimRef with PVC %s/%s UID %v", pv.Name, pv.Spec.ClaimRef.Name, pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.UID)
+
+		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -108,6 +138,9 @@ func (r *PVCReclaimerReconciler) hasBindingConflictEvent(
 
 	for _, ev := range eventList.Items {
 		if ev.InvolvedObject.Kind != "PersistentVolumeClaim" {
+			continue
+		}
+		if ev.InvolvedObject.Namespace != pvc.Namespace {
 			continue
 		}
 		if ev.InvolvedObject.Name != pvc.Name {
@@ -166,6 +199,8 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+
+	metrics.Registry.MustRegister(staticPVReleaserSuccessTotal, staticPVReleaserFailureTotal)
 }
 
 func main() {
