@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -214,6 +215,10 @@ func main() {
 		LeaderElection:          true,
 		LeaderElectionID:        "static-pv-releaser",
 		LeaderElectionNamespace: namespace,
+		Metrics: metricsserver.Options{
+			BindAddress: "0.0.0.0:8123",
+		},
+		HealthProbeBindAddress: ":8080",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
